@@ -23,8 +23,8 @@ A FastAPI-based web scraper that automates login to ComBank Digital and extracts
 
 1. Clone the repository:
    ```bash
-   git clone <your-repo-url>
-   cd finance
+   git clone https://github.com/kanchana404/Combank-Automation.git
+   cd Combank-Automation
    ```
 
 2. Build and run:
@@ -114,57 +114,317 @@ Health check endpoint.
 }
 ```
 
-## Linux VPS Deployment
+## Complete Linux VPS Deployment Guide
 
-### 1. Install Docker & Docker Compose
+This guide will walk you through deploying the ComBank Scraper API on a Linux VPS from scratch.
+
+### Prerequisites
+
+- A Linux VPS (Ubuntu 20.04/22.04 recommended)
+- SSH access to your VPS
+- Root or sudo access
+- At least 2GB RAM and 10GB disk space
+
+### Step 1: Connect to Your VPS
+
+Connect to your VPS using SSH:
+
+```bash
+ssh root@YOUR_VPS_IP
+# or
+ssh your_username@YOUR_VPS_IP
+```
+
+Replace `YOUR_VPS_IP` with your actual VPS IP address.
+
+### Step 2: Update System Packages
 
 ```bash
 sudo apt-get update -y
+sudo apt-get upgrade -y
+```
+
+### Step 3: Install Git (if not already installed)
+
+```bash
+sudo apt-get install -y git
+```
+
+### Step 4: Clone the Repository
+
+```bash
+cd /opt
+sudo git clone https://github.com/kanchana404/Combank-Automation.git
+cd Combank-Automation
+```
+
+### Step 5: Install Docker
+
+```bash
+# Install prerequisites
 sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
 
+# Add Docker's official GPG key
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
+# Update package index
 sudo apt-get update -y
+
+# Install Docker
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io
 
+# Verify Docker installation
+sudo docker --version
+```
+
+### Step 6: Install Docker Compose
+
+**Option A: Install Docker Compose Plugin (Recommended - Newer Method)**
+
+```bash
+# Install Docker Compose as a plugin (part of Docker CLI)
+sudo apt-get install -y docker-compose-plugin
+
+# Verify installation
+docker compose version
+```
+
+**Option B: Install Standalone Docker Compose (Legacy Method)**
+
+If Option A doesn't work, use the standalone version:
+
+```bash
+# Download Docker Compose
 sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+
+# Make it executable
 sudo chmod +x /usr/local/bin/docker-compose
 
+# Verify installation
+docker-compose --version
+```
+
+**Note:** If you use Option A (plugin), use `docker compose` (with space). If you use Option B (standalone), use `docker-compose` (with hyphen).
+
+### Step 7: Start and Enable Docker
+
+```bash
+# Start Docker service
 sudo systemctl start docker
+
+# Enable Docker to start on boot
 sudo systemctl enable docker
+
+# Verify Docker is running
+sudo systemctl status docker
 ```
 
-### 2. Upload Project Files
-
-Upload all project files to your VPS using `scp`, `git clone`, or SFTP.
-
-### 3. Configure Firewall
+### Step 8: Configure Firewall
 
 ```bash
+# Allow port 8000
 sudo ufw allow 8000/tcp
+
+# If UFW is not active, enable it
+sudo ufw enable
+
+# Reload firewall
 sudo ufw reload
+
+# Check firewall status
+sudo ufw status
 ```
 
-### 4. Build and Run
+### Step 9: Build and Run the Application
 
 ```bash
-cd /path/to/project
+# Navigate to project directory
+cd /opt/Combank-Automation
+
+# Build and start the container (this may take 5-10 minutes)
+# Use ONE of these commands depending on your Docker Compose installation:
+
+# If you installed Docker Compose plugin (Option A):
+sudo docker compose up -d --build
+
+# OR if you installed standalone Docker Compose (Option B):
 sudo docker-compose up -d --build
 ```
 
-### 5. Test
+The `-d` flag runs the container in detached mode (background), and `--build` rebuilds the image.
 
+### Step 10: Check Container Status
+
+```bash
+# Check if container is running
+sudo docker ps
+
+# View logs (use the command that matches your Docker Compose installation)
+# For Docker Compose plugin:
+sudo docker compose logs -f
+
+# OR for standalone Docker Compose:
+sudo docker-compose logs -f
+```
+
+Press `Ctrl+C` to exit the logs view.
+
+### Step 11: Get Your VPS IP Address
+
+```bash
+# Get your VPS IP
+hostname -I
+# or
+curl ifconfig.me
+```
+
+Note down the IP address shown.
+
+### Step 12: Test the API
+
+**Test from VPS (localhost):**
+```bash
+curl -X POST "http://localhost:8000/scrape" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "YOUR_USERNAME", "password": "YOUR_PASSWORD"}'
+```
+
+**Test from your local machine:**
 ```bash
 curl -X POST "http://YOUR_VPS_IP:8000/scrape" \
   -H "Content-Type: application/json" \
   -d '{"username": "YOUR_USERNAME", "password": "YOUR_PASSWORD"}'
 ```
 
+Replace:
+- `YOUR_VPS_IP` with your actual VPS IP address
+- `YOUR_USERNAME` with your ComBank username
+- `YOUR_PASSWORD` with your ComBank password
+
+### Step 13: Verify API is Working
+
+Test the health check endpoint:
+
+```bash
+curl http://localhost:8000/
+```
+
+You should see:
+```json
+{"message":"ComBank Digital Scraper API","version":"1.0.0"}
+```
+
+### Quick Reference Commands
+
+**If using Docker Compose plugin (`docker compose`):**
+```bash
+# View logs
+sudo docker compose logs -f
+
+# Stop the container
+sudo docker compose down
+
+# Start the container
+sudo docker compose up -d
+
+# Restart the container
+sudo docker compose restart
+
+# Rebuild after code changes
+sudo docker compose down
+sudo docker compose up -d --build
+
+# Check container status
+sudo docker ps
+
+# Access container shell (for debugging)
+sudo docker exec -it combank-scraper /bin/bash
+```
+
+**If using standalone Docker Compose (`docker-compose`):**
+```bash
+# View logs
+sudo docker-compose logs -f
+
+# Stop the container
+sudo docker-compose down
+
+# Start the container
+sudo docker-compose up -d
+
+# Restart the container
+sudo docker-compose restart
+
+# Rebuild after code changes
+sudo docker-compose down
+sudo docker-compose up -d --build
+
+# Check container status
+sudo docker ps
+
+# Access container shell (for debugging)
+sudo docker exec -it combank-scraper /bin/bash
+```
+
+### Troubleshooting
+
+**Container won't start:**
+```bash
+# Check detailed logs (use the command matching your installation)
+sudo docker compose logs
+# OR
+sudo docker-compose logs
+
+# Check Docker service
+sudo systemctl status docker
+```
+
+**Port 8000 already in use:**
+```bash
+# Find what's using port 8000
+sudo lsof -i :8000
+
+# Or change port in docker-compose.yml to 8001
+```
+
+**Chrome/ChromeDriver issues:**
+```bash
+# Rebuild without cache (use the command matching your installation)
+sudo docker compose down
+sudo docker compose build --no-cache
+sudo docker compose up -d
+# OR
+sudo docker-compose down
+sudo docker-compose build --no-cache
+sudo docker-compose up -d
+```
+
+**Permission denied errors:**
+```bash
+# Add your user to docker group (logout and login again)
+sudo usermod -aG docker $USER
+```
+
+### Auto-Start on Reboot
+
+The container is configured with `restart: unless-stopped` in `docker-compose.yml`, so it will automatically restart if the VPS reboots.
+
+### Security Notes
+
+- The API is currently accessible without authentication
+- For production use, consider:
+  - Adding API authentication
+  - Setting up Nginx reverse proxy with SSL
+  - Implementing rate limiting
+  - Using environment variables for sensitive data
+
 ## Project Structure
 
 ```
-finance/
+Combank-Automation/
 ├── main.py              # FastAPI application and scraper logic
 ├── requirements.txt     # Python dependencies
 ├── Dockerfile          # Docker image configuration
@@ -176,6 +436,25 @@ finance/
 
 ## Docker Commands
 
+**Using Docker Compose plugin (`docker compose`):**
+```bash
+# Build and start
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+
+# Stop container
+docker compose down
+
+# Restart container
+docker compose restart
+
+# Rebuild after code changes
+docker compose up -d --build
+```
+
+**Using standalone Docker Compose (`docker-compose`):**
 ```bash
 # Build and start
 docker-compose up -d --build
