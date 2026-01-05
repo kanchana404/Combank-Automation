@@ -6,6 +6,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import time
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ComBank Digital Scraper", version="1.0.0")
 
@@ -30,9 +35,12 @@ def scrape_account_data(username: str, password: str):
     """Scrape account balance and transaction data"""
     driver = None
     try:
+        logger.info("Starting scraper...")
         # Initialize Chrome driver
         chrome_options = get_chrome_options()
+        logger.info("Initializing Chrome driver...")
         driver = webdriver.Chrome(options=chrome_options)
+        logger.info("Chrome driver initialized successfully")
         
         # Open the URL
         url = "https://www.combankdigital.com/"
@@ -256,9 +264,16 @@ def read_root():
 @app.post("/scrape")
 def scrape_endpoint(request: LoginRequest):
     """Scrape account data using provided credentials"""
-    result = scrape_account_data(request.username, request.password)
-    
-    if not result['success']:
-        raise HTTPException(status_code=500, detail=result.get('error', 'Unknown error occurred'))
-    
-    return result
+    logger.info(f"Received scrape request for username: {request.username}")
+    try:
+        result = scrape_account_data(request.username, request.password)
+        
+        if not result['success']:
+            logger.error(f"Scraping failed: {result.get('error', 'Unknown error')}")
+            raise HTTPException(status_code=500, detail=result.get('error', 'Unknown error occurred'))
+        
+        logger.info("Scraping completed successfully")
+        return result
+    except Exception as e:
+        logger.error(f"Exception in scrape_endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
