@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  combank-scraper:
+    build: .
+    container_name: combank-scraper
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+    shm_size: '2gb'  # Required for Chrome in Docker
+    networks:
+      - combank-network
+
+networks:
+  combank-network:
+    driver: bridge
+
