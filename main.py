@@ -372,8 +372,16 @@ def get_chrome_options(headless=True):
     return chrome_options
 
 def check_and_handle_active_session_modal(driver, wait):
-    """Check for 'active session' modal and close it. Returns True if modal was found and closed."""
+    """Check for 'active session' modal and close it. Returns True only if modal was found and requires retry."""
     try:
+        # First check page source for "active session" text (quick check)
+        try:
+            page_text = driver.page_source.lower()
+            if 'active session' not in page_text and 'already active' not in page_text and 'detected an already' not in page_text:
+                return False  # No active session text, no need to check further
+        except:
+            pass  # If we can't check page source, continue with element search
+        
         # Look for the specific "active session" modal
         modal_selectors = [
             'div.ui-dialog[role="dialog"]',
@@ -386,10 +394,12 @@ def check_and_handle_active_session_modal(driver, wait):
                 for modal in modals:
                     if modal.is_displayed():
                         # Check if it contains "active session" text
-                        modal_text = modal.text.lower()
-                        page_text = driver.page_source.lower()
+                        try:
+                            modal_text = modal.text.lower()
+                        except:
+                            modal_text = ""
                         
-                        if 'active session' in modal_text or 'already active' in modal_text or 'detected an already' in page_text:
+                        if 'active session' in modal_text or 'already active' in modal_text:
                             logger.info("⚠️ Detected 'active session' modal - closing it...")
                             
                             # Try to find and click the OK button
@@ -446,20 +456,25 @@ def check_and_handle_active_session_modal(driver, wait):
                                 time.sleep(2)
                                 try:
                                     if not modal.is_displayed():
-                                        logger.info("✅ Active session modal closed successfully")
-                                        return True
+                                        logger.info("✅ Active session modal closed successfully - continuing without retry")
+                                        return False  # Modal closed successfully, no retry needed
                                 except:
-                                    logger.info("✅ Active session modal closed (element no longer accessible)")
-                                    return True
+                                    logger.info("✅ Active session modal closed (element no longer accessible) - continuing without retry")
+                                    return False  # Modal closed, no retry needed
                             
-                            return clicked
+                            # If we couldn't close it, return True to trigger retry
+                            if not clicked:
+                                logger.warning("⚠️ Active session modal found but could not close - will retry")
+                                return True
+                            
+                            return False  # Modal was handled, no retry needed
             except:
                 continue
         
-        return False
+        return False  # No modal found, no retry needed
     except Exception as e:
         logger.warning(f"Error checking for active session modal: {str(e)}")
-        return False
+        return False  # Error checking, don't retry
 
 def scrape_account_data(username: str, password: str, headless: bool = True, retry_count: int = 0):
     """Scrape account balance and transaction data with retry for active session modal"""
