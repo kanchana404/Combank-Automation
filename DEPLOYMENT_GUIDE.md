@@ -457,6 +457,46 @@ docker stats combank-scraper
 # Increase VPS RAM if needed
 ```
 
+### No Space Left on Device
+
+**Error:** `no space left on device` or `failed to extract layer`
+
+**Solution:**
+
+```bash
+# Check disk space
+df -h
+
+# Check Docker disk usage
+docker system df
+
+# Clean up Docker (removes unused images, containers, networks, build cache)
+docker system prune -a --volumes
+
+# Remove unused images
+docker image prune -a
+
+# Remove build cache
+docker builder prune -a
+
+# Check what's using space
+du -sh /var/lib/docker/*
+
+# If still not enough space, remove old containers and images manually
+docker ps -a
+docker images
+docker rm $(docker ps -aq)  # Remove all containers
+docker rmi $(docker images -q)  # Remove all images
+
+# After cleanup, try building again
+docker-compose up -d --build
+```
+
+**Prevention:**
+- Regularly clean Docker: `docker system prune -a`
+- Monitor disk space: `df -h`
+- Consider increasing VPS disk size
+
 ## Complete Deployment Script
 
 Save this as `deploy.sh` and make it executable:
