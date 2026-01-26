@@ -616,8 +616,8 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
                 raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
         
         # Now wait 1 minute for OTP email to arrive
-        logger.info("Waiting 60 seconds for OTP email to arrive...")
-        time.sleep(60)
+        logger.info("Waiting 20 seconds for OTP email to arrive...")
+        time.sleep(20)
         
         # After waiting, check for OTP input field again (it should be visible now)
         if not otp_input or not otp_input.is_displayed():
