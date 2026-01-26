@@ -7,6 +7,21 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import time
 import logging
+import os
+import json
+from dotenv import load_dotenv
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request as GoogleRequest
+from googleapiclient.discovery import build
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
+from email.utils import parsedate_to_datetime
+import re
+import base64
+from datetime import datetime, timezone
+
+# Load environment variables from .env file
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,30 +29,350 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ComBank Digital Scraper", version="1.0.0")
 
+# Google OAuth Configuration (for token refresh)
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+TOKEN_FILE = "google_tokens.json"
+
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "")
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "combank_scraper")
+MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "google_tokens")
+
+# MongoDB connection (lazy initialization)
+_mongo_client = None
+_mongo_db = None
+
+def get_mongo_client():
+    """Get MongoDB client (singleton pattern)"""
+    global _mongo_client
+    if _mongo_client is None and MONGODB_URI:
+        try:
+            _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+            # Test connection
+            _mongo_client.admin.command('ping')
+            logger.info("MongoDB connection established")
+        except ConnectionFailure as e:
+            logger.error(f"MongoDB connection failed: {str(e)}")
+            _mongo_client = None
+    return _mongo_client
+
+def get_mongo_db():
+    """Get MongoDB database"""
+    global _mongo_db
+    client = get_mongo_client()
+    if client is not None and _mongo_db is None:
+        _mongo_db = client[MONGODB_DB_NAME]
+    return _mongo_db
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+    headless: bool = True  # Default to headless, set False for testing
 
-def get_chrome_options():
-    """Configure Chrome options for headless mode (Linux VPS)"""
+# Helper functions for Google OAuth
+def save_tokens(credentials: Credentials):
+    """Save credentials to MongoDB (primary) and file (backup)"""
+    token_data = {
+        'access_token': credentials.token,
+        'refresh_token': credentials.refresh_token,
+        'token_uri': credentials.token_uri,
+        'client_id': credentials.client_id,
+        'client_secret': credentials.client_secret,
+        'scopes': credentials.scopes,
+        'updated_at': datetime.now(timezone.utc).isoformat()
+    }
+    
+    # Save to MongoDB (primary)
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            collection = db[MONGODB_COLLECTION_NAME]
+            # Upsert: update if exists, insert if not
+            collection.update_one(
+                {'_id': 'google_oauth_tokens'},
+                {'$set': token_data},
+                upsert=True
+            )
+            logger.info("Tokens saved to MongoDB successfully")
+        except Exception as e:
+            logger.error(f"Error saving tokens to MongoDB: {str(e)}")
+    
+    # Save to file as backup
+    try:
+        file_token_data = {
+            'token': credentials.token,
+            'refresh_token': credentials.refresh_token,
+            'token_uri': credentials.token_uri,
+            'client_id': credentials.client_id,
+            'client_secret': credentials.client_secret,
+            'scopes': credentials.scopes
+        }
+        with open(TOKEN_FILE, 'w') as f:
+            json.dump(file_token_data, f)
+        logger.info("Tokens saved to file (backup) successfully")
+    except Exception as e:
+        logger.warning(f"Error saving tokens to file: {str(e)}")
+
+def load_tokens():
+    """Load credentials from MongoDB (primary), environment variables, or file (fallback)"""
+    # Priority 1: MongoDB
+    db = get_mongo_db()
+    if db is not None:
+        try:
+            collection = db[MONGODB_COLLECTION_NAME]
+            token_doc = collection.find_one({'_id': 'google_oauth_tokens'})
+            if token_doc:
+                logger.info("Loading tokens from MongoDB")
+                credentials = Credentials(
+                    token=token_doc.get('access_token') or token_doc.get('token'),
+                    refresh_token=token_doc.get('refresh_token'),
+                    token_uri=token_doc.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                    client_id=token_doc.get('client_id', GOOGLE_CLIENT_ID),
+                    client_secret=token_doc.get('client_secret', GOOGLE_CLIENT_SECRET),
+                    scopes=token_doc.get('scopes', SCOPES)
+                )
+                return credentials
+        except Exception as e:
+            logger.warning(f"Error loading tokens from MongoDB: {str(e)}")
+    
+    # Priority 2: Environment variables
+    env_token = os.getenv("GOOGLE_ACCESS_TOKEN")
+    env_refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
+    
+    if env_token and env_refresh_token:
+        logger.info("Loading tokens from environment variables")
+        try:
+            credentials = Credentials(
+                token=env_token,
+                refresh_token=env_refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=GOOGLE_CLIENT_ID,
+                client_secret=GOOGLE_CLIENT_SECRET,
+                scopes=SCOPES
+            )
+            return credentials
+        except Exception as e:
+            logger.error(f"Error loading tokens from environment: {str(e)}")
+    
+    # Priority 3: File (fallback)
+    if os.path.exists(TOKEN_FILE):
+        try:
+            logger.info("Loading tokens from file")
+            with open(TOKEN_FILE, 'r') as f:
+                token_data = json.load(f)
+            credentials = Credentials(
+                token=token_data.get('token') or token_data.get('access_token'),
+                refresh_token=token_data.get('refresh_token'),
+                token_uri=token_data.get('token_uri', 'https://oauth2.googleapis.com/token'),
+                client_id=token_data.get('client_id', GOOGLE_CLIENT_ID),
+                client_secret=token_data.get('client_secret', GOOGLE_CLIENT_SECRET),
+                scopes=token_data.get('scopes', SCOPES)
+            )
+            return credentials
+        except Exception as e:
+            logger.error(f"Error loading tokens from file: {str(e)}")
+    
+    return None
+
+def get_gmail_service():
+    """Get Gmail service using stored credentials (auto-refreshes and saves to MongoDB)"""
+    credentials = load_tokens()
+    if not credentials:
+        raise HTTPException(status_code=401, detail="No credentials found. Please authenticate first.")
+    
+    # Refresh token if expired and save back to MongoDB
+    if credentials.expired and credentials.refresh_token:
+        logger.info("Access token expired, refreshing...")
+        try:
+            credentials.refresh(GoogleRequest())
+            save_tokens(credentials)  # Save refreshed tokens to MongoDB
+            logger.info("Token refreshed and saved to MongoDB")
+        except Exception as e:
+            logger.error(f"Error refreshing token: {str(e)}")
+            raise HTTPException(status_code=401, detail=f"Token refresh failed: {str(e)}")
+    
+    service = build('gmail', 'v1', credentials=credentials)
+    return service
+
+def clean_html_text(html_text):
+    """Clean HTML text to extract only readable content"""
+    import re
+    
+    # Remove script and style tags with their content
+    html_text = re.sub(r'<script[^>]*>.*?</script>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    html_text = re.sub(r'<style[^>]*>.*?</style>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Remove HTML comments
+    html_text = re.sub(r'<!--.*?-->', '', html_text, flags=re.DOTALL)
+    
+    # Replace common HTML entities
+    html_text = html_text.replace('&nbsp;', ' ')
+    html_text = html_text.replace('&amp;', '&')
+    html_text = html_text.replace('&lt;', '<')
+    html_text = html_text.replace('&gt;', '>')
+    html_text = html_text.replace('&quot;', '"')
+    html_text = html_text.replace('&#39;', "'")
+    
+    # Remove all HTML tags
+    html_text = re.sub(r'<[^>]+>', '', html_text)
+    
+    # Clean up whitespace - replace multiple spaces/newlines with single space
+    html_text = re.sub(r'\s+', ' ', html_text)
+    
+    # Remove leading/trailing whitespace from each line
+    lines = [line.strip() for line in html_text.split('\n') if line.strip()]
+    
+    # Join lines and clean up
+    cleaned = '\n'.join(lines)
+    
+    # Remove excessive blank lines
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    return cleaned.strip()
+
+def extract_email_body(message_payload):
+    """Extract email body from message payload (handles both plain text and HTML)"""
+    body = ''
+    html_body = ''
+    
+    def extract_from_part(part):
+        nonlocal body, html_body
+        if part.get('mimeType') == 'text/plain':
+            data = part.get('body', {}).get('data')
+            if data:
+                body = base64.urlsafe_b64decode(data).decode('utf-8')
+        elif part.get('mimeType') == 'text/html':
+            data = part.get('body', {}).get('data')
+            if data:
+                html_body = base64.urlsafe_b64decode(data).decode('utf-8')
+        
+        # Recursively check nested parts
+        if 'parts' in part:
+            for subpart in part['parts']:
+                extract_from_part(subpart)
+    
+    if 'parts' in message_payload:
+        for part in message_payload['parts']:
+            extract_from_part(part)
+    else:
+        if message_payload.get('mimeType') == 'text/plain':
+            data = message_payload.get('body', {}).get('data')
+            if data:
+                body = base64.urlsafe_b64decode(data).decode('utf-8')
+        elif message_payload.get('mimeType') == 'text/html':
+            data = message_payload.get('body', {}).get('data')
+            if data:
+                html_body = base64.urlsafe_b64decode(data).decode('utf-8')
+    
+    # Return plain text if available, otherwise return cleaned HTML
+    if body:
+        return body.strip()
+    elif html_body:
+        return clean_html_text(html_body)
+    return ''
+
+def get_combank_otp():
+    """Get OTP from latest ComBank email"""
+    try:
+        service = get_gmail_service()
+        
+        # Search for ComBank emails - get more to ensure we find the latest
+        results = service.users().messages().list(
+            userId='me',
+            maxResults=10,
+            q='from:combank OR from:combankdigital OR from:Commercial_bk@combank.net OR subject:OTP OR subject:"One-Time Password"'
+        ).execute()
+        
+        messages = results.get('messages', [])
+        
+        if not messages:
+            logger.warning("No ComBank emails found")
+            return None
+        
+        # Get full message details and sort by date (newest first)
+        combank_emails = []
+        for msg in messages:
+            message = service.users().messages().get(userId='me', id=msg['id'], format='full').execute()
+            
+            # Get email headers
+            headers = message['payload'].get('headers', [])
+            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
+            sender = next((h['value'] for h in headers if h['name'] == 'From'), '')
+            date_str = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+            
+            # Check if it's from ComBank
+            if 'combank' not in sender.lower() and 'combank' not in subject.lower():
+                continue
+            
+            # Extract body
+            body = extract_email_body(message['payload'])
+            
+            # Extract OTP (6-digit number)
+            otp_pattern = r'\b\d{6}\b'
+            otp_matches = re.findall(otp_pattern, body)
+            
+            if otp_matches:
+                # Parse date for sorting
+                try:
+                    date_obj = parsedate_to_datetime(date_str)
+                except:
+                    date_obj = datetime.now(timezone.utc)
+                
+                combank_emails.append({
+                    'date': date_obj,
+                    'otp': otp_matches[0],
+                    'subject': subject,
+                    'sender': sender
+                })
+        
+        if not combank_emails:
+            logger.warning("No OTP found in ComBank emails")
+            return None
+        
+        # Sort by date (newest first) and return the latest OTP
+        combank_emails.sort(key=lambda x: x['date'], reverse=True)
+        latest_email = combank_emails[0]
+        otp = latest_email['otp']
+        
+        logger.info(f"OTP found from latest ComBank email: {otp} (Subject: {latest_email['subject']})")
+        return otp
+        
+    except Exception as e:
+        logger.error(f"Error getting OTP: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving OTP: {str(e)}")
+
+def get_chrome_options(headless=True):
+    """Configure Chrome options for headless or visible mode"""
     chrome_options = Options()
-    chrome_options.add_argument('--headless')  # Run in headless mode
+    if headless:
+        chrome_options.add_argument('--headless=new')  # Use new headless mode
     chrome_options.add_argument('--no-sandbox')  # Required for Linux VPS
     chrome_options.add_argument('--disable-dev-shm-usage')  # Overcome limited resource problems
     chrome_options.add_argument('--disable-gpu')  # Disable GPU hardware acceleration
     chrome_options.add_argument('--window-size=1920,1080')  # Set window size for headless
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')  # Avoid detection
+    chrome_options.add_argument('--disable-extensions')  # Disable extensions
+    chrome_options.add_argument('--disable-software-rasterizer')  # Disable software rasterizer
+    chrome_options.add_argument('--disable-setuid-sandbox')  # Disable setuid sandbox
+    chrome_options.add_argument('--remote-debugging-port=9222')  # Enable remote debugging
+    chrome_options.add_argument('--disable-background-timer-throttling')
+    chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+    chrome_options.add_argument('--disable-renderer-backgrounding')
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
+    if not headless:
+        chrome_options.add_experimental_option("detach", True)
     return chrome_options
 
-def scrape_account_data(username: str, password: str):
+def scrape_account_data(username: str, password: str, headless: bool = True):
     """Scrape account balance and transaction data"""
     driver = None
     try:
-        logger.info("Starting scraper...")
+        logger.info(f"Starting scraper... (headless={headless})")
         # Initialize Chrome driver
-        chrome_options = get_chrome_options()
+        chrome_options = get_chrome_options(headless=headless)
         logger.info("Initializing Chrome driver...")
         driver = webdriver.Chrome(options=chrome_options)
         logger.info("Chrome driver initialized successfully")
@@ -108,7 +443,30 @@ def scrape_account_data(username: str, password: str):
         wait.until(EC.element_to_be_clickable(password_input))
         password_input.clear()
         password_input.send_keys(password)
-        time.sleep(4)
+        time.sleep(2)
+        
+        # Check if OTP input field appears before login (as per user's description)
+        otp_input = None
+        otp_selectors = [
+            'input[type="text"][placeholder="OTP"]',
+            'input[type="text"][placeholder*="OTP"]',
+            'input.field.textarea-non-bold[placeholder="OTP"]',
+            'input[autocomplete="one-time-code"][placeholder="OTP"]',
+            'input[ng-model*="ngModel"][placeholder="OTP"]'
+        ]
+        
+        # Try to find OTP input before clicking login
+        for selector in otp_selectors:
+            try:
+                otp_input = driver.find_elements(By.CSS_SELECTOR, selector)
+                if otp_input:
+                    otp_input = otp_input[0]
+                    if otp_input.is_displayed():
+                        logger.info("OTP input field found before login")
+                        break
+                otp_input = None
+            except:
+                continue
         
         # Find and click Login button
         login_button = None
@@ -127,7 +485,80 @@ def scrape_account_data(username: str, password: str):
                 )
         
         login_button.click()
-        time.sleep(10)
+        logger.info("Login button clicked, waiting for OTP email...")
+        time.sleep(5)  # Wait a bit for the page to process
+        
+        # Now wait 1 minute for OTP email to arrive
+        logger.info("Waiting 60 seconds for OTP email to arrive...")
+        time.sleep(60)
+        
+        # After waiting, check for OTP input field again (it should be visible now)
+        if not otp_input or not otp_input.is_displayed():
+            logger.info("Looking for OTP input field after login click...")
+            for selector in otp_selectors:
+                try:
+                    otp_elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    for elem in otp_elements:
+                        if elem.is_displayed():
+                            otp_input = elem
+                            logger.info("OTP input field found after login")
+                            break
+                    if otp_input:
+                        break
+                except:
+                    continue
+        
+        # Handle OTP verification
+        if otp_input and otp_input.is_displayed():
+            logger.info("OTP input field found, retrieving OTP from Gmail...")
+            
+            # Get OTP from Gmail (latest ComBank email)
+            otp = get_combank_otp()
+            
+            if not otp:
+                # Try again after a short wait
+                logger.info("OTP not found, waiting 10 more seconds and retrying...")
+                time.sleep(10)
+                otp = get_combank_otp()
+            
+            if otp:
+                logger.info(f"OTP retrieved from Gmail: {otp}")
+                # Enter OTP
+                wait.until(EC.element_to_be_clickable(otp_input))
+                otp_input.clear()
+                otp_input.send_keys(otp)
+                time.sleep(2)
+                
+                # Find and click Login button again (after OTP entry)
+                login_button_after_otp = None
+                try:
+                    login_button_after_otp = wait.until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, 'input[type="submit"][value="Login"]'))
+                    )
+                except:
+                    try:
+                        login_button_after_otp = wait.until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, 'input.button.small[value="Login"]'))
+                        )
+                    except:
+                        try:
+                            login_button_after_otp = wait.until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, 'input.button[type="submit"][value="Login"]'))
+                            )
+                        except:
+                            # Try to find any submit button
+                            login_button_after_otp = driver.find_element(By.CSS_SELECTOR, 'input[type="submit"]')
+                
+                if login_button_after_otp:
+                    login_button_after_otp.click()
+                    logger.info("Login button clicked after OTP entry, waiting for authentication...")
+                    time.sleep(10)
+                else:
+                    logger.warning("OTP entered but login button not found")
+            else:
+                raise Exception("Could not retrieve OTP from Gmail. Please ensure Gmail OAuth is configured and OTP email has arrived.")
+        else:
+            logger.warning("OTP input field not found - may not be required or page structure changed")
         
         # Check for error modal and close it
         try:
@@ -261,12 +692,194 @@ def scrape_account_data(username: str, password: str):
 def read_root():
     return {"message": "ComBank Digital Scraper API", "version": "1.0.0"}
 
+
+@app.get("/auth/status")
+def auth_status():
+    """Check OAuth token status"""
+    try:
+        credentials = load_tokens()
+        if not credentials:
+            return {
+                "authenticated": False,
+                "message": "No tokens found. Please set tokens using POST /auth/tokens or seed MongoDB using seed_tokens.py"
+            }
+        
+        # Check if token is valid
+        if credentials.expired:
+            if credentials.refresh_token:
+                try:
+                    credentials.refresh(GoogleRequest())
+                    save_tokens(credentials)  # Save refreshed tokens to MongoDB
+                    return {
+                        "authenticated": True,
+                        "message": "Tokens refreshed successfully and saved to MongoDB",
+                        "expired": False
+                    }
+                except Exception as e:
+                    return {
+                        "authenticated": False,
+                        "message": f"Token expired and refresh failed: {str(e)}. Please update tokens using POST /auth/tokens"
+                    }
+            else:
+                return {
+                    "authenticated": False,
+                    "message": "Token expired and no refresh token available. Please set tokens using POST /auth/tokens"
+                }
+        
+        return {
+            "authenticated": True,
+            "message": "Tokens are valid",
+            "expired": False,
+            "scopes": credentials.scopes
+        }
+    except Exception as e:
+        return {
+            "authenticated": False,
+            "message": f"Error checking status: {str(e)}"
+        }
+
+
+class TokenRequest(BaseModel):
+    access_token: str
+    refresh_token: str
+
+@app.get("/auth/tokens")
+def get_tokens():
+    """Get current access token and refresh token (for VPS deployment)"""
+    try:
+        credentials = load_tokens()
+        if not credentials:
+            raise HTTPException(
+                status_code=404,
+                detail="No tokens found. Please authenticate first at /auth/google"
+            )
+        
+        # Refresh token if expired
+        if credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(GoogleRequest())
+                save_tokens(credentials)
+            except Exception as e:
+                logger.warning(f"Could not refresh token: {str(e)}")
+        
+        return {
+            "success": True,
+            "access_token": credentials.token,
+            "refresh_token": credentials.refresh_token,
+            "expired": credentials.expired,
+            "token_uri": credentials.token_uri,
+            "scopes": credentials.scopes,
+            "instructions": {
+                "for_vps": "Copy these tokens and set them as environment variables:",
+                "access_token_env": "GOOGLE_ACCESS_TOKEN",
+                "refresh_token_env": "GOOGLE_REFRESH_TOKEN",
+                "note": "The refresh token is long-lived and can be used to get new access tokens automatically."
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting tokens: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving tokens: {str(e)}")
+
+@app.post("/auth/tokens")
+def set_tokens(request: TokenRequest):
+    """Manually set access token and refresh token (for VPS deployment)"""
+    try:
+        if not request.access_token or not request.refresh_token:
+            raise HTTPException(
+                status_code=400,
+                detail="Both access_token and refresh_token are required"
+            )
+        
+        # Create credentials object
+        credentials = Credentials(
+            token=request.access_token,
+            refresh_token=request.refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET,
+            scopes=SCOPES
+        )
+        
+        # Verify token works by trying to refresh if expired
+        if credentials.expired:
+            try:
+                credentials.refresh(GoogleRequest())
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid refresh token: {str(e)}"
+                )
+        
+        # Save tokens
+        save_tokens(credentials)
+        
+        logger.info("Tokens set manually via API")
+        
+        return {
+            "success": True,
+            "message": "Tokens saved successfully",
+            "expired": credentials.expired,
+            "note": "Tokens are now stored and will be used for Gmail API access"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting tokens: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error setting tokens: {str(e)}")
+
+@app.get("/auth/tokens/export")
+def export_tokens():
+    """Export tokens as JSON (for backup/VPS deployment)"""
+    try:
+        credentials = load_tokens()
+        if not credentials:
+            raise HTTPException(
+                status_code=404,
+                detail="No tokens found. Please authenticate first at /auth/google"
+            )
+        
+        # Refresh token if expired
+        if credentials.expired and credentials.refresh_token:
+            try:
+                credentials.refresh(GoogleRequest())
+                save_tokens(credentials)
+            except Exception as e:
+                logger.warning(f"Could not refresh token: {str(e)}")
+        
+        token_data = {
+            "access_token": credentials.token,
+            "refresh_token": credentials.refresh_token,
+            "token_uri": credentials.token_uri,
+            "client_id": credentials.client_id,
+            "client_secret": credentials.client_secret,
+            "scopes": credentials.scopes,
+            "expired": credentials.expired
+        }
+        
+        return {
+            "success": True,
+            "tokens": token_data,
+            "instructions": {
+                "for_vps": "Use these tokens in your VPS deployment:",
+                "method1": "Set environment variables: GOOGLE_ACCESS_TOKEN and GOOGLE_REFRESH_TOKEN",
+                "method2": "Or use POST /auth/tokens endpoint to set them programmatically",
+                "method3": "Or copy google_tokens.json file to your VPS"
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting tokens: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error exporting tokens: {str(e)}")
+
 @app.post("/scrape")
 def scrape_endpoint(request: LoginRequest):
     """Scrape account data using provided credentials"""
-    logger.info(f"Received scrape request for username: {request.username}")
+    logger.info(f"Received scrape request for username: {request.username} (headless={request.headless})")
     try:
-        result = scrape_account_data(request.username, request.password)
+        result = scrape_account_data(request.username, request.password, headless=request.headless)
         
         if not result['success']:
             logger.error(f"Scraping failed: {result.get('error', 'Unknown error')}")

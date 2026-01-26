@@ -19,5 +19,12 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
+# Google OAuth tokens
+google_tokens.json
+
+# Environment variables
+.env
+.env.local
+
 
 
