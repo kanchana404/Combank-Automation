@@ -719,39 +719,42 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
                     logger.info("Login button clicked after OTP entry, waiting for authentication...")
                     time.sleep(5)
                     
-                    # Check for active session modal after OTP login (only if we haven't already retried)
-                    if retry_count == 0:  # Only check on first attempt
-                        try:
-                            active_session_detected = check_and_handle_active_session_modal(driver, wait)
-                            if active_session_detected:
-                                logger.info("Active session modal detected after OTP and could not be closed. Retrying...")
-                                if retry_count < max_retries:
-                                    # Safely close driver before retry
-                                    try:
-                                        driver.quit()
-                                    except:
-                                        pass
-                                    time.sleep(3)  # Wait a bit longer before retry
-                                    logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
-                                    return scrape_account_data(username, password, headless, retry_count + 1)
-                                else:
-                                    raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
-                        except Exception as modal_error:
-                            # If checking modal fails (driver might be closed), check if we should retry
-                            if 'InvalidSessionIdException' in str(type(modal_error).__name__) or 'invalid session' in str(modal_error).lower():
-                                logger.warning("Driver session invalid while checking modal. This might indicate browser crash.")
-                                if retry_count < max_retries:
-                                    try:
-                                        driver.quit()
-                                    except:
-                                        pass
-                                    time.sleep(3)
-                                    logger.info(f"Retrying scrape due to session error (attempt {retry_count + 1}/{max_retries})...")
-                                    return scrape_account_data(username, password, headless, retry_count + 1)
-                            # If it's not a session error, just log and continue (modal check is optional)
-                            logger.warning(f"Error checking modal (non-critical): {str(modal_error)}")
+                    # Check for active session modal after OTP login and close it if present
+                    # After closing, we continue scraping (no retry needed - user is already logged in)
+                    logger.info("Checking for active session modal after OTP login...")
+                    try:
+                        modal_needs_retry = check_and_handle_active_session_modal(driver, wait)
+                        if modal_needs_retry:
+                            # Only retry if modal was found but couldn't be closed
+                            logger.warning("Active session modal found but could not be closed. Retrying...")
+                            if retry_count < max_retries:
+                                try:
+                                    driver.quit()
+                                except:
+                                    pass
+                                time.sleep(3)
+                                logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
+                                return scrape_account_data(username, password, headless, retry_count + 1)
+                        else:
+                            # Modal was closed successfully or not found - continue with scraping
+                            logger.info("✅ Active session modal handled (closed or not present). Continuing with data extraction...")
+                    except Exception as modal_error:
+                        # If checking modal fails (driver might be closed), check if we should retry
+                        if 'InvalidSessionIdException' in str(type(modal_error).__name__) or 'invalid session' in str(modal_error).lower():
+                            logger.warning("Driver session invalid while checking modal. This might indicate browser crash.")
+                            if retry_count < max_retries:
+                                try:
+                                    driver.quit()
+                                except:
+                                    pass
+                                time.sleep(3)
+                                logger.info(f"Retrying scrape due to session error (attempt {retry_count + 1}/{max_retries})...")
+                                return scrape_account_data(username, password, headless, retry_count + 1)
+                        # If it's not a session error, just log and continue (modal check is optional)
+                        logger.warning(f"Error checking modal (non-critical): {str(modal_error)}")
                     
-                    time.sleep(5)  # Additional wait after modal check
+                    time.sleep(3)  # Brief wait after modal check before proceeding
+                    logger.info("Proceeding to scrape account data...")
                 else:
                     logger.warning("OTP entered but login button not found")
             else:
@@ -759,31 +762,24 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         else:
             logger.warning("OTP input field not found - may not be required or page structure changed")
         
-        # Check for active session modal one more time before proceeding (only on first attempt)
-        if retry_count == 0:
-            try:
-                active_session_detected = check_and_handle_active_session_modal(driver, wait)
-                if active_session_detected and retry_count < max_retries:
-                    logger.info("Active session modal detected before data extraction and could not be closed. Retrying...")
+        # Check for active session modal one more time before proceeding and close it if present
+        # After closing, we continue scraping (no retry - user should be logged in by now)
+        try:
+            check_and_handle_active_session_modal(driver, wait)
+            logger.info("Final modal check completed, proceeding to data extraction...")
+        except Exception as modal_check_error:
+            # If checking modal fails due to session error, retry
+            if 'InvalidSessionIdException' in str(type(modal_check_error).__name__) or 'invalid session' in str(modal_check_error).lower():
+                logger.warning("Session invalid while checking modal. Retrying...")
+                if retry_count < max_retries:
                     try:
                         driver.quit()
                     except:
                         pass
                     time.sleep(3)
                     return scrape_account_data(username, password, headless, retry_count + 1)
-            except Exception as modal_check_error:
-                # If checking modal fails due to session error, retry
-                if 'InvalidSessionIdException' in str(type(modal_check_error).__name__) or 'invalid session' in str(modal_check_error).lower():
-                    logger.warning("Session invalid while checking modal. Retrying...")
-                    if retry_count < max_retries:
-                        try:
-                            driver.quit()
-                        except:
-                            pass
-                        time.sleep(3)
-                        return scrape_account_data(username, password, headless, retry_count + 1)
-                # Otherwise, just log and continue (modal check is optional)
-                logger.warning(f"Error checking modal (non-critical): {str(modal_check_error)}")
+            # Otherwise, just log and continue (modal check is optional)
+            logger.warning(f"Error checking modal (non-critical): {str(modal_check_error)}")
         
         # Check for modals/dialogs and close them (including "active session" modal)
         def close_modal_if_present():
