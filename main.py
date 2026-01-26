@@ -361,6 +361,10 @@ def get_chrome_options(headless=True):
     chrome_options.add_argument('--disable-background-timer-throttling')
     chrome_options.add_argument('--disable-backgrounding-occluded-windows')
     chrome_options.add_argument('--disable-renderer-backgrounding')
+    chrome_options.add_argument('--disable-crash-reporter')  # Disable crash reporter
+    chrome_options.add_argument('--disable-logging')  # Disable logging
+    chrome_options.add_argument('--log-level=3')  # Only show fatal errors
+    # Note: --single-process can cause issues, removed for stability
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     if not headless:
@@ -603,17 +607,35 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         time.sleep(5)  # Wait a bit for the page to process
         
         # Check for active session modal immediately after login click
-        active_session_detected = check_and_handle_active_session_modal(driver, wait)
-        if active_session_detected:
-            logger.info("Active session modal detected and closed. Retrying login process...")
-            if retry_count < max_retries:
-                # Close driver and retry
-                driver.quit()
-                time.sleep(2)
-                logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
-                return scrape_account_data(username, password, headless, retry_count + 1)
-            else:
-                raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
+        try:
+            active_session_detected = check_and_handle_active_session_modal(driver, wait)
+            if active_session_detected:
+                logger.info("Active session modal detected and closed. Retrying login process...")
+                if retry_count < max_retries:
+                    # Safely close driver and retry
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    time.sleep(3)  # Wait a bit longer before retry
+                    logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
+                    return scrape_account_data(username, password, headless, retry_count + 1)
+                else:
+                    raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
+        except Exception as modal_error:
+            # If checking modal fails, check if we should retry
+            if 'InvalidSessionIdException' in str(type(modal_error).__name__) or 'invalid session' in str(modal_error).lower():
+                logger.warning("Driver session invalid while checking modal. Retrying...")
+                if retry_count < max_retries:
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    time.sleep(3)
+                    logger.info(f"Retrying scrape due to session error (attempt {retry_count + 1}/{max_retries})...")
+                    return scrape_account_data(username, password, headless, retry_count + 1)
+            # If it's not a session error, continue (modal check is optional)
+            logger.warning(f"Error checking modal (non-critical): {str(modal_error)}")
         
         # Now wait 1 minute for OTP email to arrive
         logger.info("Waiting 20 seconds for OTP email to arrive...")
@@ -682,16 +704,34 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
                     time.sleep(5)
                     
                     # Check for active session modal after OTP login
-                    active_session_detected = check_and_handle_active_session_modal(driver, wait)
-                    if active_session_detected:
-                        logger.info("Active session modal detected after OTP. Retrying...")
-                        if retry_count < max_retries:
-                            driver.quit()
-                            time.sleep(2)
-                            logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
-                            return scrape_account_data(username, password, headless, retry_count + 1)
-                        else:
-                            raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
+                    try:
+                        active_session_detected = check_and_handle_active_session_modal(driver, wait)
+                        if active_session_detected:
+                            logger.info("Active session modal detected after OTP. Retrying...")
+                            if retry_count < max_retries:
+                                # Safely close driver before retry
+                                try:
+                                    driver.quit()
+                                except:
+                                    pass
+                                time.sleep(3)  # Wait a bit longer before retry
+                                logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
+                                return scrape_account_data(username, password, headless, retry_count + 1)
+                            else:
+                                raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
+                    except Exception as modal_error:
+                        # If checking modal fails (driver might be closed), check if we should retry
+                        if 'InvalidSessionIdException' in str(type(modal_error).__name__) or 'invalid session' in str(modal_error).lower():
+                            logger.warning("Driver session invalid while checking modal. This might indicate browser crash.")
+                            if retry_count < max_retries:
+                                try:
+                                    driver.quit()
+                                except:
+                                    pass
+                                time.sleep(3)
+                                logger.info(f"Retrying scrape due to session error (attempt {retry_count + 1}/{max_retries})...")
+                                return scrape_account_data(username, password, headless, retry_count + 1)
+                        raise
                     
                     time.sleep(5)  # Additional wait after modal check
                 else:
@@ -702,12 +742,29 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
             logger.warning("OTP input field not found - may not be required or page structure changed")
         
         # Check for active session modal one more time before proceeding
-        active_session_detected = check_and_handle_active_session_modal(driver, wait)
-        if active_session_detected and retry_count < max_retries:
-            logger.info("Active session modal detected before data extraction. Retrying...")
-            driver.quit()
-            time.sleep(2)
-            return scrape_account_data(username, password, headless, retry_count + 1)
+        try:
+            active_session_detected = check_and_handle_active_session_modal(driver, wait)
+            if active_session_detected and retry_count < max_retries:
+                logger.info("Active session modal detected before data extraction. Retrying...")
+                try:
+                    driver.quit()
+                except:
+                    pass
+                time.sleep(3)
+                return scrape_account_data(username, password, headless, retry_count + 1)
+        except Exception as modal_check_error:
+            # If checking modal fails due to session error, retry
+            if 'InvalidSessionIdException' in str(type(modal_check_error).__name__) or 'invalid session' in str(modal_check_error).lower():
+                logger.warning("Session invalid while checking modal. Retrying...")
+                if retry_count < max_retries:
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                    time.sleep(3)
+                    return scrape_account_data(username, password, headless, retry_count + 1)
+            # Otherwise, just log and continue (modal check is optional)
+            logger.warning(f"Error checking modal (non-critical): {str(modal_check_error)}")
         
         # Check for modals/dialogs and close them (including "active session" modal)
         def close_modal_if_present():
@@ -956,6 +1013,19 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         error_msg = str(e)
         error_type = type(e).__name__
         
+        # Check if it's a session error and we can retry
+        if 'InvalidSessionIdException' in error_type or 'invalid session' in error_msg.lower():
+            logger.warning(f"Browser session invalid: {error_msg}")
+            if retry_count < max_retries:
+                try:
+                    if driver:
+                        driver.quit()
+                except:
+                    pass
+                time.sleep(3)
+                logger.info(f"Retrying scrape due to session error (attempt {retry_count + 1}/{max_retries})...")
+                return scrape_account_data(username, password, headless, retry_count + 1)
+        
         # Log full exception details
         logger.error(f"Scraping failed: {error_type}: {error_msg}", exc_info=True)
         
@@ -977,7 +1047,13 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
     finally:
         if driver:
             try:
-                driver.quit()
+                # Check if driver session is still valid before quitting
+                try:
+                    driver.current_url  # Test if session is valid
+                    driver.quit()
+                except:
+                    # Session already invalid, just pass
+                    pass
             except:
                 pass
 
