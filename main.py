@@ -1,6 +1,7 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from fastapi import FastAPI, HTTPException
@@ -366,9 +367,100 @@ def get_chrome_options(headless=True):
         chrome_options.add_experimental_option("detach", True)
     return chrome_options
 
-def scrape_account_data(username: str, password: str, headless: bool = True):
-    """Scrape account balance and transaction data"""
+def check_and_handle_active_session_modal(driver, wait):
+    """Check for 'active session' modal and close it. Returns True if modal was found and closed."""
+    try:
+        # Look for the specific "active session" modal
+        modal_selectors = [
+            'div.ui-dialog[role="dialog"]',
+            'div[role="dialog"].ui-dialog'
+        ]
+        
+        for selector in modal_selectors:
+            try:
+                modals = driver.find_elements(By.CSS_SELECTOR, selector)
+                for modal in modals:
+                    if modal.is_displayed():
+                        # Check if it contains "active session" text
+                        modal_text = modal.text.lower()
+                        page_text = driver.page_source.lower()
+                        
+                        if 'active session' in modal_text or 'already active' in modal_text or 'detected an already' in page_text:
+                            logger.info("⚠️ Detected 'active session' modal - closing it...")
+                            
+                            # Try to find and click the OK button
+                            ok_button_selectors = [
+                                'a.button.small.close-dialog',  # Primary selector from the HTML
+                                'a.close-dialog',
+                                '.close-dialog',
+                                'a.button.small',
+                                'a[class*="close-dialog"]'
+                            ]
+                            
+                            clicked = False
+                            for ok_sel in ok_button_selectors:
+                                try:
+                                    # Try finding in modal first
+                                    ok_btn = modal.find_element(By.CSS_SELECTOR, ok_sel)
+                                    if ok_btn.is_displayed():
+                                        wait.until(EC.element_to_be_clickable(ok_btn))
+                                        ok_btn.click()
+                                        logger.info(f"✅ Clicked OK button in active session modal using: {ok_sel}")
+                                        time.sleep(3)  # Wait for modal to close
+                                        clicked = True
+                                        break
+                                except:
+                                    continue
+                            
+                            # If not found in modal, try in entire page
+                            if not clicked:
+                                try:
+                                    ok_btn = driver.find_element(By.CSS_SELECTOR, 'a.button.small.close-dialog')
+                                    if ok_btn.is_displayed():
+                                        wait.until(EC.element_to_be_clickable(ok_btn))
+                                        ok_btn.click()
+                                        logger.info("✅ Clicked OK button (found in page)")
+                                        time.sleep(3)
+                                        clicked = True
+                                except:
+                                    pass
+                            
+                            # Try XPath for OK button
+                            if not clicked:
+                                try:
+                                    ok_btn = driver.find_element(By.XPATH, "//a[contains(@class, 'close-dialog') and contains(text(), 'OK')]")
+                                    if ok_btn.is_displayed():
+                                        ok_btn.click()
+                                        logger.info("✅ Clicked OK button using XPath")
+                                        time.sleep(3)
+                                        clicked = True
+                                except:
+                                    pass
+                            
+                            if clicked:
+                                # Verify modal is closed
+                                time.sleep(2)
+                                try:
+                                    if not modal.is_displayed():
+                                        logger.info("✅ Active session modal closed successfully")
+                                        return True
+                                except:
+                                    logger.info("✅ Active session modal closed (element no longer accessible)")
+                                    return True
+                            
+                            return clicked
+            except:
+                continue
+        
+        return False
+    except Exception as e:
+        logger.warning(f"Error checking for active session modal: {str(e)}")
+        return False
+
+def scrape_account_data(username: str, password: str, headless: bool = True, retry_count: int = 0):
+    """Scrape account balance and transaction data with retry for active session modal"""
     driver = None
+    max_retries = 2  # Maximum number of retries for active session modal
     try:
         logger.info(f"Starting scraper... (headless={headless})")
         # Initialize Chrome driver
@@ -510,6 +602,19 @@ def scrape_account_data(username: str, password: str, headless: bool = True):
         logger.info("Login button clicked, waiting for OTP email...")
         time.sleep(5)  # Wait a bit for the page to process
         
+        # Check for active session modal immediately after login click
+        active_session_detected = check_and_handle_active_session_modal(driver, wait)
+        if active_session_detected:
+            logger.info("Active session modal detected and closed. Retrying login process...")
+            if retry_count < max_retries:
+                # Close driver and retry
+                driver.quit()
+                time.sleep(2)
+                logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
+                return scrape_account_data(username, password, headless, retry_count + 1)
+            else:
+                raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
+        
         # Now wait 1 minute for OTP email to arrive
         logger.info("Waiting 60 seconds for OTP email to arrive...")
         time.sleep(60)
@@ -574,7 +679,21 @@ def scrape_account_data(username: str, password: str, headless: bool = True):
                 if login_button_after_otp:
                     login_button_after_otp.click()
                     logger.info("Login button clicked after OTP entry, waiting for authentication...")
-                    time.sleep(10)
+                    time.sleep(5)
+                    
+                    # Check for active session modal after OTP login
+                    active_session_detected = check_and_handle_active_session_modal(driver, wait)
+                    if active_session_detected:
+                        logger.info("Active session modal detected after OTP. Retrying...")
+                        if retry_count < max_retries:
+                            driver.quit()
+                            time.sleep(2)
+                            logger.info(f"Retrying scrape (attempt {retry_count + 1}/{max_retries})...")
+                            return scrape_account_data(username, password, headless, retry_count + 1)
+                        else:
+                            raise Exception("Active session modal appeared multiple times. Please wait a few minutes and try again.")
+                    
+                    time.sleep(5)  # Additional wait after modal check
                 else:
                     logger.warning("OTP entered but login button not found")
             else:
@@ -582,25 +701,159 @@ def scrape_account_data(username: str, password: str, headless: bool = True):
         else:
             logger.warning("OTP input field not found - may not be required or page structure changed")
         
-        # Check for error modal and close it
-        try:
-            modal_dialog = driver.find_elements(By.CSS_SELECTOR, 'div.ui-dialog[role="dialog"]')
-            if modal_dialog:
-                try:
-                    ok_button = wait.until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, 'a.button.small.close-dialog'))
-                    )
-                    ok_button.click()
-                    time.sleep(2)
-                except:
+        # Check for active session modal one more time before proceeding
+        active_session_detected = check_and_handle_active_session_modal(driver, wait)
+        if active_session_detected and retry_count < max_retries:
+            logger.info("Active session modal detected before data extraction. Retrying...")
+            driver.quit()
+            time.sleep(2)
+            return scrape_account_data(username, password, headless, retry_count + 1)
+        
+        # Check for modals/dialogs and close them (including "active session" modal)
+        def close_modal_if_present():
+            """Close any modal dialog that appears, especially 'active session' modal"""
+            try:
+                # Check page source for "active session" text
+                page_text = driver.page_source.lower()
+                if 'active session' in page_text or 'already active' in page_text or 'detected an already' in page_text:
+                    logger.info("Detected 'active session' modal in page, attempting to close...")
+                
+                # Look for modal dialogs with multiple selectors
+                modal_selectors = [
+                    'div.ui-dialog[role="dialog"]',
+                    'div[role="dialog"]',
+                    '.ui-dialog',
+                    '.modal',
+                    'div.dialog',
+                    'div[class*="dialog"]',
+                    'div[class*="modal"]'
+                ]
+                
+                modal_found = False
+                for selector in modal_selectors:
                     try:
-                        close_button = driver.find_element(By.CSS_SELECTOR, 'button.ui-dialog-titlebar-close')
-                        close_button.click()
-                        time.sleep(2)
+                        modals = driver.find_elements(By.CSS_SELECTOR, selector)
+                        for modal in modals:
+                            if modal.is_displayed():
+                                modal_found = True
+                                
+                                # Check modal text content
+                                try:
+                                    modal_text = modal.text.lower()
+                                    if 'active session' in modal_text or 'already active' in modal_text:
+                                        logger.info("Found 'active session' modal, closing it...")
+                                except:
+                                    pass
+                                
+                                # Try multiple ways to close the modal
+                                close_selectors = [
+                                    'a.button.small.close-dialog',
+                                    'button.ui-dialog-titlebar-close',
+                                    'a[class*="close"]',
+                                    'button[class*="close"]',
+                                    'input[value="OK"]',
+                                    'input[value="Ok"]',
+                                    '.ui-dialog-titlebar-close',
+                                    '[aria-label="Close"]',
+                                    'button[type="button"]',
+                                    'a.button'
+                                ]
+                                
+                                closed = False
+                                for close_sel in close_selectors:
+                                    try:
+                                        close_btn = modal.find_element(By.CSS_SELECTOR, close_sel)
+                                        if close_btn.is_displayed():
+                                            close_btn.click()
+                                            logger.info(f"Modal closed using selector: {close_sel}")
+                                            time.sleep(2)
+                                            closed = True
+                                            break
+                                    except:
+                                        continue
+                                
+                                # Try finding OK/Close button in the modal by text
+                                if not closed:
+                                    try:
+                                        # Look for buttons/links with OK, Close, or similar text
+                                        ok_xpath = ".//button[contains(translate(text(), 'OK', 'ok'), 'ok')] | .//a[contains(translate(text(), 'OK', 'ok'), 'ok')] | .//input[@value='OK' or @value='Ok']"
+                                        ok_buttons = modal.find_elements(By.XPATH, ok_xpath)
+                                        for btn in ok_buttons:
+                                            if btn.is_displayed():
+                                                btn.click()
+                                                logger.info("Modal closed using OK button found in modal")
+                                                time.sleep(2)
+                                                closed = True
+                                                break
+                                    except:
+                                        pass
+                                
+                                # Try clicking anywhere on modal to dismiss (some modals close on click)
+                                if not closed:
+                                    try:
+                                        modal.click()
+                                        logger.info("Modal clicked to dismiss")
+                                        time.sleep(1)
+                                    except:
+                                        pass
+                                
+                                break
+                    except:
+                        continue
+                
+                # If no modal found by selectors, try XPath for any dialog/modal
+                if not modal_found:
+                    try:
+                        # Look for any element containing "active session" text
+                        active_session_elements = driver.find_elements(By.XPATH, "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'active session') or contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'already active')]")
+                        if active_session_elements:
+                            logger.info("Found 'active session' text, looking for close button...")
+                            # Find parent dialog/modal
+                            for elem in active_session_elements:
+                                try:
+                                    # Find the dialog container
+                                    dialog = elem.find_element(By.XPATH, "./ancestor::div[contains(@class, 'dialog') or contains(@class, 'modal') or @role='dialog']")
+                                    # Try to find close button in dialog
+                                    close_btns = dialog.find_elements(By.XPATH, ".//button | .//a | .//input[@type='button' or @type='submit']")
+                                    for btn in close_btns:
+                                        btn_text = btn.text.lower() if btn.text else ''
+                                        if 'ok' in btn_text or 'close' in btn_text or btn.get_attribute('value') in ['OK', 'Ok']:
+                                            if btn.is_displayed():
+                                                btn.click()
+                                                logger.info("Active session modal closed")
+                                                time.sleep(2)
+                                                break
+                                except:
+                                    continue
                     except:
                         pass
-        except:
-            pass
+                
+                # Also check for JavaScript alert dialogs
+                try:
+                    alert = driver.switch_to.alert
+                    alert_text = alert.text.lower()
+                    if 'active session' in alert_text:
+                        logger.info("Found 'active session' alert, accepting...")
+                    alert.accept()
+                    logger.info("Alert dialog accepted")
+                    time.sleep(1)
+                except:
+                    pass
+                    
+            except Exception as e:
+                logger.warning(f"Error closing modal: {str(e)}")
+        
+        # Check for modals after login (before OTP)
+        time.sleep(2)
+        close_modal_if_present()
+        
+        # Check again after OTP entry (if OTP was entered)
+        time.sleep(2)
+        close_modal_if_present()
+        
+        # Check one more time after final login
+        time.sleep(3)
+        close_modal_if_present()
         
         # Find balance
         balance = "Not found"

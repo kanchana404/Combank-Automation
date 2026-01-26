@@ -461,41 +461,57 @@ docker stats combank-scraper
 
 **Error:** `no space left on device` or `failed to extract layer`
 
-**Solution:**
+**Solution (Run these commands on your VPS):**
 
 ```bash
-# Check disk space
+# 1. Check disk space
 df -h
 
-# Check Docker disk usage
-docker system df
+# 2. Check Docker disk usage
+sudo docker system df
 
-# Clean up Docker (removes unused images, containers, networks, build cache)
-docker system prune -a --volumes
+# 3. Stop all running containers
+sudo docker stop $(sudo docker ps -aq) 2>/dev/null || true
 
-# Remove unused images
-docker image prune -a
+# 4. Remove all containers
+sudo docker rm $(sudo docker ps -aq) 2>/dev/null || true
 
-# Remove build cache
-docker builder prune -a
+# 5. Remove all images
+sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
 
-# Check what's using space
-du -sh /var/lib/docker/*
+# 6. Remove build cache (this frees a lot of space)
+sudo docker builder prune -a -f
 
-# If still not enough space, remove old containers and images manually
-docker ps -a
-docker images
-docker rm $(docker ps -aq)  # Remove all containers
-docker rmi $(docker images -q)  # Remove all images
+# 7. Full system cleanup
+sudo docker system prune -a --volumes -f
 
-# After cleanup, try building again
-docker-compose up -d --build
+# 8. Check space again
+df -h
+
+# 9. If still low, check what's using space
+sudo du -sh /var/lib/docker/* | sort -h
+
+# 10. After cleanup, try building again
+sudo docker-compose up -d --build
+```
+
+**Quick cleanup script:**
+
+```bash
+# Run this on VPS
+sudo docker stop $(sudo docker ps -aq) 2>/dev/null; \
+sudo docker rm $(sudo docker ps -aq) 2>/dev/null; \
+sudo docker rmi $(sudo docker images -q) 2>/dev/null; \
+sudo docker builder prune -a -f; \
+sudo docker system prune -a --volumes -f; \
+df -h
 ```
 
 **Prevention:**
-- Regularly clean Docker: `docker system prune -a`
+- Regularly clean Docker: `sudo docker system prune -a`
 - Monitor disk space: `df -h`
 - Consider increasing VPS disk size
+- Set up automatic cleanup cron job
 
 ## Complete Deployment Script
 
