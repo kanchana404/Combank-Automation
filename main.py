@@ -374,15 +374,37 @@ def scrape_account_data(username: str, password: str, headless: bool = True):
         # Initialize Chrome driver
         chrome_options = get_chrome_options(headless=headless)
         logger.info("Initializing Chrome driver...")
-        driver = webdriver.Chrome(options=chrome_options)
-        logger.info("Chrome driver initialized successfully")
+        try:
+            driver = webdriver.Chrome(options=chrome_options)
+            logger.info("Chrome driver initialized successfully")
+            
+            # Verify Chrome and ChromeDriver versions
+            try:
+                chrome_version = driver.capabilities.get('browserVersion', 'Unknown')
+                chromedriver_version = driver.capabilities.get('chrome', {}).get('chromedriverVersion', 'Unknown')
+                logger.info(f"Chrome version: {chrome_version}, ChromeDriver version: {chromedriver_version}")
+            except:
+                pass
+        except Exception as chrome_error:
+            error_detail = str(chrome_error)
+            if hasattr(chrome_error, 'msg'):
+                error_detail = chrome_error.msg
+            logger.error(f"Failed to initialize Chrome driver: {error_detail}", exc_info=True)
+            raise Exception(f"Chrome driver initialization failed: {error_detail}")
         
         # Open the URL
         url = "https://www.combankdigital.com/"
-        driver.get(url)
+        logger.info(f"Opening URL: {url}")
+        try:
+            driver.get(url)
+            logger.info("Page loaded successfully")
+        except Exception as page_error:
+            logger.error(f"Failed to load page: {str(page_error)}", exc_info=True)
+            raise Exception(f"Failed to load page: {str(page_error)}")
         
         # Wait for the page to load
         wait = WebDriverWait(driver, 10)
+        logger.info("Waiting for page elements...")
         
         # Find and fill username
         username_input = None
@@ -678,15 +700,33 @@ def scrape_account_data(username: str, password: str, headless: bool = True):
         }
         
     except Exception as e:
+        error_msg = str(e)
+        error_type = type(e).__name__
+        
+        # Log full exception details
+        logger.error(f"Scraping failed: {error_type}: {error_msg}", exc_info=True)
+        
+        # Get more details for Selenium exceptions
+        if hasattr(e, 'msg'):
+            error_msg = f"{error_type}: {e.msg}"
+        elif hasattr(e, 'message'):
+            error_msg = f"{error_type}: {e.message}"
+        else:
+            error_msg = f"{error_type}: {str(e)}"
+        
         return {
             'success': False,
-            'error': str(e),
+            'error': error_msg,
+            'error_type': error_type,
             'balance': None,
             'transactions': []
         }
     finally:
         if driver:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
 
 @app.get("/")
 def read_root():
@@ -882,11 +922,29 @@ def scrape_endpoint(request: LoginRequest):
         result = scrape_account_data(request.username, request.password, headless=request.headless)
         
         if not result['success']:
-            logger.error(f"Scraping failed: {result.get('error', 'Unknown error')}")
-            raise HTTPException(status_code=500, detail=result.get('error', 'Unknown error occurred'))
+            error_detail = result.get('error', 'Unknown error')
+            error_type = result.get('error_type', 'Exception')
+            logger.error(f"Scraping failed: {error_type}: {error_detail}")
+            raise HTTPException(
+                status_code=500, 
+                detail={
+                    "error": error_detail,
+                    "error_type": error_type,
+                    "message": "Scraping failed. Check logs for details."
+                }
+            )
         
         logger.info("Scraping completed successfully")
         return result
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Exception in scrape_endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Exception in scrape_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "message": "An unexpected error occurred. Check server logs for details."
+            }
+        )
