@@ -71,8 +71,11 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1) \
 # Copy requirements file
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+    # Upgrade pip first
+    RUN pip install --upgrade pip setuptools wheel
+    
+    # Install Python dependencies
+    RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
