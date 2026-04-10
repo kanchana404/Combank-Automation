@@ -352,7 +352,7 @@ def get_chrome_options(headless=True):
     chrome_options.add_argument('--no-sandbox')  # Required for Linux VPS
     chrome_options.add_argument('--disable-dev-shm-usage')  # Overcome limited resource problems
     chrome_options.add_argument('--disable-gpu')  # Disable GPU hardware acceleration
-    chrome_options.add_argument('--window-size=1920,1080')  # Set window size for headless
+    chrome_options.add_argument('--window-size=1280,720')  # Smaller window to save memory
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')  # Avoid detection
     chrome_options.add_argument('--disable-extensions')  # Disable extensions
     chrome_options.add_argument('--disable-software-rasterizer')  # Disable software rasterizer
@@ -364,12 +364,16 @@ def get_chrome_options(headless=True):
     chrome_options.add_argument('--disable-crash-reporter')  # Disable crash reporter
     chrome_options.add_argument('--disable-logging')  # Disable logging
     chrome_options.add_argument('--log-level=3')  # Only show fatal errors
-    chrome_options.add_argument('--single-process')  # Reduce memory usage on low-RAM VPS
-    chrome_options.add_argument('--disable-features=VizDisplayCompositor')  # Reduce memory
+    chrome_options.add_argument('--disable-features=VizDisplayCompositor,TranslateUI')  # Reduce memory
     chrome_options.add_argument('--disable-translate')  # Disable translate
-    chrome_options.add_argument('--no-zygote')  # Reduce memory by disabling zygote process
-    chrome_options.add_argument('--js-flags=--max-old-space-size=256')  # Limit JS heap
-    # Note: --single-process can cause issues, removed for stability
+    chrome_options.add_argument('--js-flags=--max-old-space-size=128')  # Limit JS heap
+    chrome_options.add_argument('--disable-ipc-flooding-protection')
+    chrome_options.add_argument('--disable-default-apps')
+    chrome_options.add_argument('--disable-popup-blocking')
+    chrome_options.add_argument('--disable-hang-monitor')
+    chrome_options.add_argument('--disable-prompt-on-repost')
+    chrome_options.add_argument('--memory-pressure-off')  # Disable memory pressure signals
+    chrome_options.add_argument('--renderer-process-limit=1')  # Limit renderer processes
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     if not headless:
