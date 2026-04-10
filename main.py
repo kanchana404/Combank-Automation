@@ -952,38 +952,6 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
             except:
                 pass
 
-        # Find current balance
-        current_balance = "Not found"
-        try:
-            current_balance_element = driver.find_element(
-                By.XPATH, '//span[contains(text(),"Current Balance")]/parent::li/strong'
-            )
-            current_balance = current_balance_element.text
-        except:
-            try:
-                current_balance_element = driver.find_element(
-                    By.XPATH, '//span[translate(text(),"CURRENT BALANCE","current balance")="current balance"]/parent::li/strong'
-                )
-                current_balance = current_balance_element.text
-            except:
-                pass
-
-        # Find total holds
-        total_holds = "Not found"
-        try:
-            total_holds_element = driver.find_element(
-                By.XPATH, '//li[contains(@class,"last") and contains(text(),"Total Holds")]/strong'
-            )
-            total_holds = total_holds_element.text
-        except:
-            try:
-                total_holds_element = driver.find_element(
-                    By.XPATH, '//li[contains(text(),"Total Holds")]/strong'
-                )
-                total_holds = total_holds_element.text
-            except:
-                pass
-        
         # Find and click account
         account_element = None
         try:
@@ -1009,7 +977,39 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
                 raise Exception(f"Could not find or click account: {str(e)}")
         
         time.sleep(5)  # Wait for transaction table to load
-        
+
+        # Find current balance (after account detail panel loads)
+        current_balance = "Not found"
+        try:
+            current_balance_element = driver.find_element(
+                By.XPATH, '//span[contains(text(),"Current Balance")]/parent::li/strong'
+            )
+            current_balance = current_balance_element.text
+        except:
+            try:
+                current_balance_element = driver.find_element(
+                    By.XPATH, '//span[translate(text(),"CURRENT BALANCE","current balance")="current balance"]/parent::li/strong'
+                )
+                current_balance = current_balance_element.text
+            except:
+                pass
+
+        # Find total holds (after account detail panel loads)
+        total_holds = "Not found"
+        try:
+            total_holds_element = driver.find_element(
+                By.XPATH, '//li[contains(@class,"last") and contains(text(),"Total Holds")]/strong'
+            )
+            total_holds = total_holds_element.text
+        except:
+            try:
+                total_holds_element = driver.find_element(
+                    By.XPATH, '//li[contains(text(),"Total Holds")]/strong'
+                )
+                total_holds = total_holds_element.text
+            except:
+                pass
+
         # Extract transactions
         transactions = []
         try:
