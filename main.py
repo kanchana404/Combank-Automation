@@ -364,6 +364,11 @@ def get_chrome_options(headless=True):
     chrome_options.add_argument('--disable-crash-reporter')  # Disable crash reporter
     chrome_options.add_argument('--disable-logging')  # Disable logging
     chrome_options.add_argument('--log-level=3')  # Only show fatal errors
+    chrome_options.add_argument('--single-process')  # Reduce memory usage on low-RAM VPS
+    chrome_options.add_argument('--disable-features=VizDisplayCompositor')  # Reduce memory
+    chrome_options.add_argument('--disable-translate')  # Disable translate
+    chrome_options.add_argument('--no-zygote')  # Reduce memory by disabling zygote process
+    chrome_options.add_argument('--js-flags=--max-old-space-size=256')  # Limit JS heap
     # Note: --single-process can cause issues, removed for stability
     chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
