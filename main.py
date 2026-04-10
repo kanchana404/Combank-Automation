@@ -998,17 +998,24 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         total_holds = "Not found"
         try:
             total_holds_element = driver.find_element(
-                By.XPATH, '//li[contains(@class,"last") and contains(text(),"Total Holds")]/strong'
+                By.XPATH, '//li[contains(@class,"last") and contains(.,"Total Holds")]/strong'
             )
             total_holds = total_holds_element.text
         except:
             try:
                 total_holds_element = driver.find_element(
-                    By.XPATH, '//li[contains(text(),"Total Holds")]/strong'
+                    By.XPATH, '//li[contains(.,"Total Holds")]/strong'
                 )
                 total_holds = total_holds_element.text
             except:
-                pass
+                try:
+                    # Try using CSS selector with ng-if attribute
+                    total_holds_element = driver.find_element(
+                        By.CSS_SELECTOR, 'li[ng-if*="holdAmount"] strong'
+                    )
+                    total_holds = total_holds_element.text
+                except:
+                    pass
 
         # Extract transactions
         transactions = []
