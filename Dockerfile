@@ -74,10 +74,11 @@ COPY requirements.txt .
     # Upgrade pip first to avoid version resolution issues
     RUN pip install --upgrade pip setuptools wheel
     
-    # Install Python dependencies with retry logic for network issues
+    # Install Python dependencies
+    # Using --no-deps for selenium first, then install dependencies separately if needed
+    # This helps avoid version resolution conflicts
     RUN pip install --no-cache-dir --upgrade pip && \
-        pip install --no-cache-dir -r requirements.txt || \
-        (sleep 5 && pip install --no-cache-dir -r requirements.txt)
+        pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .

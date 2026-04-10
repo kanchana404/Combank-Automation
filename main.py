@@ -927,7 +927,7 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         time.sleep(3)
         close_modal_if_present()
         
-        # Find balance
+        # Find available balance
         balance = "Not found"
         try:
             balance_element = wait.until(
@@ -940,6 +940,38 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'strong[class*="amount"][class*="credits"]'))
                 )
                 balance = balance_element.text
+            except:
+                pass
+
+        # Find current balance
+        current_balance = "Not found"
+        try:
+            current_balance_element = driver.find_element(
+                By.XPATH, '//span[contains(text(),"Current Balance")]/parent::li/strong'
+            )
+            current_balance = current_balance_element.text
+        except:
+            try:
+                current_balance_element = driver.find_element(
+                    By.XPATH, '//span[translate(text(),"CURRENT BALANCE","current balance")="current balance"]/parent::li/strong'
+                )
+                current_balance = current_balance_element.text
+            except:
+                pass
+
+        # Find total holds
+        total_holds = "Not found"
+        try:
+            total_holds_element = driver.find_element(
+                By.XPATH, '//li[contains(@class,"last") and contains(text(),"Total Holds")]/strong'
+            )
+            total_holds = total_holds_element.text
+        except:
+            try:
+                total_holds_element = driver.find_element(
+                    By.XPATH, '//li[contains(text(),"Total Holds")]/strong'
+                )
+                total_holds = total_holds_element.text
             except:
                 pass
         
@@ -1019,6 +1051,8 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         return {
             'success': True,
             'balance': balance,
+            'current_balance': current_balance,
+            'total_holds': total_holds,
             'account_number': '8014929911',
             'transactions': transactions,
             'transaction_count': len(transactions)
@@ -1057,6 +1091,8 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
             'error': error_msg,
             'error_type': error_type,
             'balance': None,
+            'current_balance': None,
+            'total_holds': None,
             'transactions': []
         }
     finally:
