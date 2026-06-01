@@ -19,6 +19,7 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 from email.utils import parsedate_to_datetime
 import re
 import base64
+import certifi
 from datetime import datetime, timezone
 
 # Load environment variables from .env file
@@ -50,7 +51,13 @@ def get_mongo_client():
     global _mongo_client
     if _mongo_client is None and MONGODB_URI:
         try:
-            _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+            # Use certifi's CA bundle so TLS verification works on systems
+            # (e.g. macOS) whose Python lacks access to the system root certs.
+            _mongo_client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,
+                tlsCAFile=certifi.where()
+            )
             # Test connection
             _mongo_client.admin.command('ping')
             logger.info("MongoDB connection established")
@@ -484,6 +491,181 @@ def check_and_handle_active_session_modal(driver, wait):
     except Exception as e:
         logger.warning(f"Error checking for active session modal: {str(e)}")
         return False  # Error checking, don't retry
+
+def get_account_numbers_from_dropdown(driver):
+    """Read all account numbers from the account selector dropdown on the
+    account details page. Masked card numbers (containing '*') are ignored,
+    so only real savings/current accounts are returned."""
+    account_numbers = []
+    try:
+        items = driver.find_elements(
+            By.CSS_SELECTOR,
+            'div[name="account"] ul.drop-down-list li span.ng-binding'
+        )
+        for item in items:
+            try:
+                # The dropdown list is display:none until opened, so .text returns
+                # empty for the hidden items. textContent reads it regardless.
+                text = (item.get_attribute('textContent') or "").strip()
+            except:
+                text = ""
+            # Skip empty values and masked debit/credit cards (e.g. 421689******1004)
+            if text and '*' not in text and text not in account_numbers:
+                account_numbers.append(text)
+    except Exception as e:
+        logger.warning(f"Could not read account numbers from dropdown: {str(e)}")
+    return account_numbers
+
+
+def select_account_in_dropdown(driver, wait, account_number):
+    """Open the account selector dropdown and pick the given account number.
+    Returns True if the account was selected."""
+    try:
+        # Open the dropdown by clicking its label
+        label = driver.find_element(
+            By.CSS_SELECTOR, 'div[name="account"] .drop-down-label'
+        )
+        try:
+            wait.until(EC.element_to_be_clickable(label))
+            label.click()
+        except:
+            driver.execute_script("arguments[0].click();", label)
+        time.sleep(1)
+
+        # Click the list item whose span text matches the account number
+        item = driver.find_element(
+            By.XPATH,
+            f'//div[@name="account"]//ul[contains(@class,"drop-down-list")]'
+            f'/li[.//span[normalize-space(text())="{account_number}"]]'
+        )
+        try:
+            wait.until(EC.element_to_be_clickable(item))
+            item.click()
+        except:
+            driver.execute_script("arguments[0].click();", item)
+        logger.info(f"Selected account {account_number} from dropdown")
+        time.sleep(5)  # Wait for the panel and transaction table to reload
+        return True
+    except Exception as e:
+        logger.warning(f"Could not select account {account_number}: {str(e)}")
+        return False
+
+
+def extract_panel_balances(driver):
+    """Extract available balance, current balance and total holds from the
+    account detail panel of the currently selected account."""
+    available_balance = "Not found"
+    current_balance = "Not found"
+    total_holds = "Not found"
+
+    # Available balance
+    try:
+        el = driver.find_element(
+            By.XPATH, '//span[contains(text(),"Available Balance")]/parent::li/strong'
+        )
+        available_balance = el.text
+    except:
+        try:
+            el = driver.find_element(
+                By.CSS_SELECTOR, 'strong.amount-0.credits.ng-binding'
+            )
+            available_balance = el.text
+        except:
+            pass
+
+    # Current balance
+    try:
+        el = driver.find_element(
+            By.XPATH, '//span[contains(text(),"Current Balance")]/parent::li/strong'
+        )
+        current_balance = el.text
+    except:
+        try:
+            el = driver.find_element(
+                By.XPATH,
+                '//span[translate(text(),"CURRENT BALANCE","current balance")="current balance"]/parent::li/strong'
+            )
+            current_balance = el.text
+        except:
+            pass
+
+    # Total holds
+    try:
+        el = driver.find_element(
+            By.XPATH, '//li[contains(@class,"last") and contains(.,"Total Holds")]/strong'
+        )
+        total_holds = el.text
+    except:
+        try:
+            el = driver.find_element(
+                By.XPATH, '//li[contains(.,"Total Holds")]/strong'
+            )
+            total_holds = el.text
+        except:
+            try:
+                el = driver.find_element(
+                    By.CSS_SELECTOR, 'li[ng-if*="holdAmount"] strong'
+                )
+                total_holds = el.text
+            except:
+                pass
+
+    return available_balance, current_balance, total_holds
+
+
+def extract_transactions(driver):
+    """Extract the transaction list of the currently selected account."""
+    transactions = []
+    try:
+        transaction_rows = driver.find_elements(
+            By.CSS_SELECTOR, 'tbody tr[ng-repeat*="transaction"]'
+        )
+        for row in transaction_rows:
+            try:
+                type_element = row.find_element(By.CSS_SELECTOR, 'td span.arrow.icon')
+                transaction_type = type_element.text.strip()
+
+                date_element = row.find_element(By.CSS_SELECTOR, 'td:nth-of-type(2)')
+                date = date_element.text.strip()
+
+                description_element = row.find_element(
+                    By.CSS_SELECTOR, 'td:nth-of-type(3) div.no-border'
+                )
+                description = description_element.text.strip()
+
+                amount_element = row.find_element(By.CSS_SELECTOR, 'td.amount')
+                amount = amount_element.text.strip()
+
+                available_balance = None
+                try:
+                    balance_element = row.find_element(By.CSS_SELECTOR, 'td.amount.ng-scope')
+                    available_balance = balance_element.text.strip()
+                except:
+                    pass
+
+                extra_details = None
+                try:
+                    extra_div = row.find_element(
+                        By.CSS_SELECTOR, 'div.extra.no-border.hidden-value'
+                    )
+                    extra_details = extra_div.text.strip()
+                except:
+                    pass
+
+                transactions.append({
+                    'type': transaction_type,
+                    'date': date,
+                    'description': description,
+                    'amount': amount,
+                    'available_balance': available_balance,
+                    'extra_details': extra_details
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return transactions
+
 
 def scrape_account_data(username: str, password: str, headless: bool = True, retry_count: int = 0):
     """Scrape account balance and transaction data with retry for active session modal"""
@@ -936,23 +1118,9 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
         time.sleep(3)
         close_modal_if_present()
         
-        # Find available balance
-        balance = "Not found"
-        try:
-            balance_element = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'strong.amount-0.credits.ng-binding'))
-            )
-            balance = balance_element.text
-        except:
-            try:
-                balance_element = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'strong[class*="amount"][class*="credits"]'))
-                )
-                balance = balance_element.text
-            except:
-                pass
-
-        # Find and click account
+        # Open the first savings account from the "My Accounts" list. This
+        # navigates to the account details page which contains the account
+        # selector dropdown used to switch between accounts.
         account_element = None
         try:
             account_element = wait.until(
@@ -975,103 +1143,59 @@ def scrape_account_data(username: str, password: str, headless: bool = True, ret
                     driver.execute_script("arguments[0].click();", account_element)
             except Exception as e:
                 raise Exception(f"Could not find or click account: {str(e)}")
-        
-        time.sleep(5)  # Wait for transaction table to load
 
-        # Find current balance (after account detail panel loads)
-        current_balance = "Not found"
-        try:
-            current_balance_element = driver.find_element(
-                By.XPATH, '//span[contains(text(),"Current Balance")]/parent::li/strong'
-            )
-            current_balance = current_balance_element.text
-        except:
-            try:
-                current_balance_element = driver.find_element(
-                    By.XPATH, '//span[translate(text(),"CURRENT BALANCE","current balance")="current balance"]/parent::li/strong'
-                )
-                current_balance = current_balance_element.text
-            except:
-                pass
+        time.sleep(5)  # Wait for the account details page + transaction table to load
 
-        # Find total holds (after account detail panel loads)
-        total_holds = "Not found"
-        try:
-            total_holds_element = driver.find_element(
-                By.XPATH, '//li[contains(@class,"last") and contains(.,"Total Holds")]/strong'
-            )
-            total_holds = total_holds_element.text
-        except:
-            try:
-                total_holds_element = driver.find_element(
-                    By.XPATH, '//li[contains(.,"Total Holds")]/strong'
-                )
-                total_holds = total_holds_element.text
-            except:
-                try:
-                    # Try using CSS selector with ng-if attribute
-                    total_holds_element = driver.find_element(
-                        By.CSS_SELECTOR, 'li[ng-if*="holdAmount"] strong'
-                    )
-                    total_holds = total_holds_element.text
-                except:
-                    pass
+        # Discover every (non-card) account number from the selector dropdown.
+        # Masked debit/credit cards are ignored automatically.
+        account_numbers = get_account_numbers_from_dropdown(driver)
+        if not account_numbers:
+            # Fallback to the known primary account if the dropdown can't be read
+            account_numbers = ['8014929911']
+            logger.warning("Dropdown could not be read; falling back to single account 8014929911")
+        logger.info(f"Accounts to scrape ({len(account_numbers)}): {account_numbers}")
 
-        # Extract transactions
-        transactions = []
-        try:
-            transaction_rows = driver.find_elements(By.CSS_SELECTOR, 'tbody tr[ng-repeat*="transaction"]')
-            
-            for row in transaction_rows:
-                try:
-                    type_element = row.find_element(By.CSS_SELECTOR, 'td span.arrow.icon')
-                    transaction_type = type_element.text.strip()
-                    
-                    date_element = row.find_element(By.CSS_SELECTOR, 'td:nth-of-type(2)')
-                    date = date_element.text.strip()
-                    
-                    description_element = row.find_element(By.CSS_SELECTOR, 'td:nth-of-type(3) div.no-border')
-                    description = description_element.text.strip()
-                    
-                    amount_element = row.find_element(By.CSS_SELECTOR, 'td.amount')
-                    amount = amount_element.text.strip()
-                    
-                    available_balance = None
-                    try:
-                        balance_element = row.find_element(By.CSS_SELECTOR, 'td.amount.ng-scope')
-                        available_balance = balance_element.text.strip()
-                    except:
-                        pass
-                    
-                    extra_details = None
-                    try:
-                        extra_div = row.find_element(By.CSS_SELECTOR, 'div.extra.no-border.hidden-value')
-                        extra_details = extra_div.text.strip()
-                    except:
-                        pass
-                    
-                    transaction = {
-                        'type': transaction_type,
-                        'date': date,
-                        'description': description,
-                        'amount': amount,
-                        'available_balance': available_balance,
-                        'extra_details': extra_details
-                    }
-                    transactions.append(transaction)
-                except Exception as e:
+        # Iterate over each account, switching via the dropdown, and collect data.
+        accounts_data = []
+        for index, acc_number in enumerate(account_numbers):
+            if index == 0:
+                # First account is already open (clicked from "My Accounts").
+                time.sleep(2)  # ensure its panel is fully rendered
+            else:
+                if not select_account_in_dropdown(driver, wait, acc_number):
+                    logger.warning(f"Skipping account {acc_number} - could not select it")
                     continue
-        except Exception as e:
-            pass
-        
+
+            available_balance, current_balance, total_holds = extract_panel_balances(driver)
+            transactions = extract_transactions(driver)
+
+            accounts_data.append({
+                'account_number': acc_number,
+                'available_balance': available_balance,
+                'current_balance': current_balance,
+                'total_holds': total_holds,
+                'transactions': transactions,
+                'transaction_count': len(transactions)
+            })
+            logger.info(
+                f"Scraped account {acc_number}: available={available_balance}, "
+                f"current={current_balance}, holds={total_holds}, "
+                f"transactions={len(transactions)}"
+            )
+
+        # Use the first account for the backward-compatible top-level fields.
+        first = accounts_data[0] if accounts_data else {}
         return {
             'success': True,
-            'balance': balance,
-            'current_balance': current_balance,
-            'total_holds': total_holds,
-            'account_number': '8014929911',
-            'transactions': transactions,
-            'transaction_count': len(transactions)
+            'accounts': accounts_data,
+            'account_count': len(accounts_data),
+            # Backward-compatible fields (first account)
+            'balance': first.get('available_balance', 'Not found'),
+            'current_balance': first.get('current_balance', 'Not found'),
+            'total_holds': first.get('total_holds', 'Not found'),
+            'account_number': first.get('account_number'),
+            'transactions': first.get('transactions', []),
+            'transaction_count': first.get('transaction_count', 0)
         }
         
     except Exception as e:
